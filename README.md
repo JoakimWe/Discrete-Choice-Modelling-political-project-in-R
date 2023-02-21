@@ -1,12 +1,8 @@
-# Things-in-R
-Different projects in R
+# Discrete Choice Modelling
 
-
-Project 1
 Voting behavior in the UK in 2016
-What factors, values and beliefs influences a person to vote for a certain party?
 
-Discrete Choice Modelling - UK_politics
+What factors, values and beliefs influences a person to vote for a certain party?
 
 Cointains a markdown script in R that can be knitted for a nice Latex-layout.
 Multinomial logit regression models are used to study the voting choices.
