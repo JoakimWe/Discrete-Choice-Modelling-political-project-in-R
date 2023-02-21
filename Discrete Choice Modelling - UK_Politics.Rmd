@@ -1,0 +1,207 @@
+---
+title: "Discrete Choice Modelling - UK_politics"
+output: pdf_document
+---
+
+```{r, message=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=F, results='asis', warning=FALSE}
+#
+#for using this data a user needs to download data on European Social Survey(ESS) website
+#
+library(essurvey)  #library from ESS.
+library(tidyverse) #for wrangling etc
+library(stargazer) #for tables
+library(margins)   #for tables
+library(marginaleffects) #tables
+library(broom)         #tables
+library(modelsummary)  #tables & models
+library(nnet)   
+library(modelr)
+library(haven)
+library(here)
+
+
+# make sure working directory is set on the right path after downloading the data
+# Downloading round 8 (2016) for United Kingdom
+ess2016uk <- read_dta("ESS8GB.dta", encoding = "macroman")
+
+# recoding to have one NA's category                              
+ess2016uk <- recode_missings(ess2016uk)
+
+
+```
+
+
+```{r}
+
+#some wrangling to get the needed variables for the models
+# edulvlb  = level of education
+# prtvtbgb = party voted for
+# imbgeco  = immigration bad or good for the economy
+# gndr     = gender
+# agea     = age
+
+# selecting variables used in models to new data frame
+# the pipe-function %>% from tivyverse makes the process 
+# easy to add new functions into the wrangling-loop
+# omitting na's
+ess2016uk_my <- ess2016uk %>%
+  select(edulvlb, prtvtbgb, imbgeco, gndr, agea) %>%
+  mutate(prtvtbgb = as_factor(prtvtbgb)) %>%
+  drop_na()
+    
+
+
+# with the pipe-function you can also pipe something into itself, like here.
+# recoding variables into new dataset 
+# some new labels for the variables needed
+# cut-off point for the education level
+ess2016uk_my <- ess2016uk_my %>%
+        mutate(party_vote = as_factor(prtvtbgb),
+               party_vote = fct_other(party_vote, keep = c("Conservative","Labour","Liberal Democrat","UK Independence Party")),
+               party_vote = fct_relevel(party_vote, "Labour"),
+               male = as.integer(gndr == 1),
+               age = as.integer(agea),
+               im_economy = as.integer(imbgeco),
+              edulvlb = as.integer(edulvlb > 500 & edulvlb < 900))
+
+
+sapply(ess2016uk_my, function(x) sum(is.na(x)))
+
+
+```
+
+
+```{r}
+
+# here a summary statistics table is created to get an overview of the dataset.
+ess2016uk_my %>%
+        select(age,male,party_vote,edulvlb,im_economy) %>% 
+        group_by("Parties"=party_vote) %>% 
+        summarise("N" = n(), 
+                  "Age" = round(mean(age, na.rm=T)),
+                  "Sex - male" = paste0(round(mean(male, na.rm=T)*100,2), "%"),
+                  "Higher Education"=paste0(round(mean(edulvlb, na.rm=T)*100,2), "%"),
+                  "Attitude towards immigrants" = round(mean(im_economy, na.rm=T))
+                  ) %>% 
+        kbl(caption = "Summary of data used in study", booktabs = T, align= "lccccc")%>%
+        footnote(general = "Data from European Social Survey 2016") %>%
+         kable_styling(latex_options = "HOLD_position")
+```
+
+
+```{r}
+# Two models created to determine what factors plays role for people voting for different political parties
+# Multinomial regression models are a good choice for this task since the output in the models are the odds 
+# of voting for a certain party as compared with another party 
+
+# multinomial model 1 - party choice dependent variable 
+# view on immigration - good/bad for country's economy independent variable
+
+model_1 <- multinom(party_vote ~ im_economy, data = ess2016uk_my)
+
+
+# party choice dependent variable and view on immigration - good/bad for country's economy
+# also control for sex,age and high educational attainment
+model_2 <- multinom(party_vote ~ im_economy + edulvlb + male + age, data = ess2016uk_my)
+
+
+```
+
+
+```{r, message=F, echo=F, results='asis', warning=FALSE}
+
+# Table of the two multinomial models. 
+# Log-odds has exponantiated to create log-odds with the function of exponentiate=T
+# kable_styling-function:HOLD_position fixes the table in the markdown-file when knitted
+
+modelsummary(list("Model 1" = model_1, "Model 2" = model_2),title = "Attitudes towards immigrations effect on countrys economy and party affiliation in the UK", note = "Data from European Social Survey 2016" ,output= "kableExtra",group = term + y.level ~ model, exponentiate = T, statistic = NULL, estimate = c("{estimate} ({std.error}){stars}"))%>%
+  kable_styling(latex_options = "HOLD_position")
+
+
+```
+
+
+```{r, message=F, echo=F, results='asis', warning=FALSE}
+# creating one combined graph with odds ratios for both models
+
+
+theme_set(theme_bw())
+
+models_fit <- tidy(model_1, exponentiate = T, conf.int = TRUE) %>% 
+    mutate(model = "Model 1") %>% 
+    bind_rows(tidy(model_2, exponentiate = T, conf.int = TRUE) %>% 
+    mutate(model = "Model 2")) %>%
+  filter(term != "(Intercept)")%>% 
+ ggplot(aes(estimate, term, colour = y.level, shape = model)) +
+  geom_vline(xintercept = 1, colour = "red", lty = 2) +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high),
+                  position = position_dodge(width = 1/2)) +
+  scale_x_log10(breaks = seq(0.4, 1.4, by = .2)) +
+  labs(y = "Odds ratios",
+       x = "",
+       colour = "Political parties",
+       caption = "Data from ESS 2016",
+       title = "Figure 1: Party affiliation and attitudes on immigration in the UK")
+
+models_fit
+
+
+
+
+
+```
+
+
+```{r, message=F, echo=F, results='asis', warning=FALSE}
+
+# creating a combined graph that illustrates the predicted probabilities for different party 
+# choices for different positions on the question on whether immigration is good for the 
+# country - this  should be based on the second model and include separate graphs for 
+# individuals with or without high education. 
+# first creating predictions
+
+model_2_mf <- model.frame(party_vote ~ imbgeco + edulvlb + male + age, data = ess2016uk_my, na.action = na.omit)
+
+model_2_predict <- predict(model_2, type = "prob")%>%
+  as_tibble() %>%
+  bind_cols(model_2_mf)
+
+library(ggeffects)
+library(scales)
+## plot of predicted probability of model 
+
+model_2_prob <- ggeffect(model_2, term = c("im_economy", "edulvlb"))
+names_my <- as_labeller(c(`0` = "Low Education", `1` = "High education"))
+
+model_2_prob %>%
+ggplot(aes(x, predicted, fill = response.level)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), 
+              alpha=0.5, colour = NA) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2)) +
+  facet_wrap(~ group, labeller = names_my) +
+  labs(title = "Figure 2: Party choice in the UK",
+       subtitle = "Estimates from multinomial logistic regression",
+       x = "Views on immigration's effect on economy (Bad - Good)",
+       y = "Predicted probability",
+       caption = "Data from ESS 2016.",
+       colour = "Party",
+       fill = "Party") 
+ 
+
+
+```
+
+
+```{r, message=F, echo=F, results='hide', warning=FALSE}
+# Finish with calculating McFadden's Pseudo-R2 to determine the models Goodness Of Fit
+library(DescTools)
+PseudoR2(model_1, which = "McFadden") # 0.02426186
+PseudoR2(model_2, which = "McFadden") # 0.03803263
+```
+
